@@ -41,7 +41,8 @@ void setup()
   pinMode(boilerSolenoidRelayPin, OUTPUT);
   pinMode(groupSolenoidRelayPin, OUTPUT);
   pinMode(pumpRelayPin, OUTPUT);
-
+  pinMode(heatRelayPin, OUTPUT);
+  
   Serial.print("starting up. Initial state: ");
   Serial.println(state);
 }
@@ -74,7 +75,7 @@ void loop() {
       tankEmptyState();
       break;
     default:
-      determineState();
+      baseState();
       break;
   }
 
@@ -105,7 +106,7 @@ void loop() {
   Serial.println("*************************");
 }
 
-void determineState() {
+void baseState() {
 //  Serial.println("state: base");
  
   digitalWrite(pumpRelayPin, LOW);
@@ -139,16 +140,18 @@ void pullAShotState() {
   }
 
   // optionally kill the shot here if the tank is empty.
-  if (tankIsEmpty) {
-    nextState = 3;
-    return;
-  }
-
-  nextState = 1;
-  
+//  if (tankIsEmpty) {
+//    nextState = 3;
+//    return;
+//  }
+ 
   digitalWrite(pumpRelayPin, HIGH);
+  digitalWrite(boilerSolenoidRelayPin, LOW);
   digitalWrite(groupSolenoidRelayPin, HIGH);
   toggleHeat(true);
+  
+  nextState = 1;
+ 
 }
 
 // state 2
@@ -162,15 +165,17 @@ void fillBoilerState() {
 
   // if the tank empties, go back to base state to deal with shutting off pump
   if (tankIsEmpty) {
-    nextState = 0;
+    nextState = 3;
     return;
   }
   
-  nextState = 2;
-  
   digitalWrite(pumpRelayPin, HIGH);
   digitalWrite(boilerSolenoidRelayPin, HIGH);
+  digitalWrite(groupSolenoidRelayPin, LOW);
   toggleHeat(false);
+
+  nextState = 2;
+  
 }
 
 // state 3
@@ -181,15 +186,18 @@ void tankEmptyState() {
     return;
   }
 
+  digitalWrite(pumpRelayPin, LOW);
+  digitalWrite(boilerSolenoidRelayPin, LOW);
+  digitalWrite(groupSolenoidRelayPin, LOW);
+
   // added protection here
   if (boilerIsEmpty) {
     toggleHeat(false);
   }
-
-  nextState = 3;
+  
+  nextState = 3; 
   
 }
-
 
 void toggleHeat(boolean heat) {
   digitalWrite(heatRelayPin, heat ? HIGH : LOW);
