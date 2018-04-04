@@ -1,5 +1,15 @@
-int analogPin= 0;
-int raw= 0;
+const int RELAY_LOW = HIGH; // 4 relay module board has inverted logic
+const int RELAY_HIGH = LOW;
+const int ANALOG_THRESH = 1000; // number for "on" for ADC based on chosen resistors and
+
+const int boilerSolenoidRelayPin = 5;
+const int groupSolenoidRelayPin = 6;
+const int pumpRelayPin = 11;
+const int heatRelayPin = 12;
+const int buttonPin = 8;
+const int analogMinPin = 3;
+const int analogMaxPin = 2;
+const int analogTankMinPin = 4;
 
 boolean boilerIsFull = false;
 boolean boilerIsEmpty = false;
@@ -7,62 +17,39 @@ boolean tankIsEmpty = false;
 boolean buttonIsPressed = false;
 boolean heatIsOn = false;
 
-int minPin = 3;
-int maxPin = 2;
-int tankMinPin = 7;
-
-int boilerSolenoidRelayPin = 5;
-int groupSolenoidRelayPin = 6;
-int pumpRelayPin = 11;
-int heatRelayPin = 12;
-
-int buttonPin = 8;
-
-int analogMinPin = 3;
-int analogMaxPin = 2;
-int analogTankMinPin = 4;
-
-int state = 0;
+int lastState = -1;
+int state = -1;
 int nextState = 0;
-
-int ANALOG_THRESH = 800; // arbitrary number for "on" for ADC
-
-boolean initializing = true;
 
 void setup()
 {
   Serial.begin(9600);
-  
-  pinMode(maxPin, INPUT);
-  pinMode(minPin, INPUT);
-  pinMode(tankMinPin, INPUT);
+
   pinMode(buttonPin, INPUT);
-  
+
   pinMode(boilerSolenoidRelayPin, OUTPUT);
   pinMode(groupSolenoidRelayPin, OUTPUT);
   pinMode(pumpRelayPin, OUTPUT);
   pinMode(heatRelayPin, OUTPUT);
-  
-  Serial.print("starting up. Initial state: ");
-  Serial.println(state);
+
+  digitalWrite(pumpRelayPin, RELAY_LOW);
+  digitalWrite(boilerSolenoidRelayPin, RELAY_LOW);
+  digitalWrite(groupSolenoidRelayPin, RELAY_LOW);
+  digitalWrite(heatRelayPin, RELAY_LOW);
+
+  Serial.println("starting up...");
 }
 
 void loop() {
-  delay(100);  
+//  delay(100);
+  lastState = state;
   state = nextState;
-  
-//  boilerIsFull = !digitalRead(maxPin);
-//  boilerIsEmpty = digitalRead(minPin);
-//  tankIsEmpty = digitalRead(tankMinPin);
- 
+
   buttonIsPressed = digitalRead(buttonPin);
 
-  
-  boilerIsFull = (analogRead(analogMaxPin) < ANALOG_THRESH); 
+  boilerIsFull = (analogRead(analogMaxPin) < ANALOG_THRESH);
   boilerIsEmpty = (analogRead(analogMinPin) >= ANALOG_THRESH);
   tankIsEmpty = (analogRead(analogTankMinPin) >= ANALOG_THRESH);
-
-//  raw= analogRead(analogPin);
 
   switch (state) {
     case 1:
@@ -79,12 +66,9 @@ void loop() {
       break;
   }
 
-  if (state == nextState && !initializing) return;
+  if (lastState == state) return;
 
-  initializing = false;
- 
   Serial.println("*************************");
-//  Serial.println(raw);
   Serial.print("state: ");
   Serial.print(state);
   Serial.print(" next state: ");
@@ -102,18 +86,18 @@ void loop() {
   Serial.println(buttonIsPressed ? "true" : "false");
   Serial.print("heat is on: ");
   Serial.println(heatIsOn ? "true" : "false");
-    
   Serial.println("*************************");
 }
 
+// state 0
 void baseState() {
 //  Serial.println("state: base");
- 
-  digitalWrite(pumpRelayPin, LOW);
-  digitalWrite(boilerSolenoidRelayPin, LOW);
-  digitalWrite(groupSolenoidRelayPin, LOW);
+
+  digitalWrite(pumpRelayPin, RELAY_LOW);
+  digitalWrite(boilerSolenoidRelayPin, RELAY_LOW);
+  digitalWrite(groupSolenoidRelayPin, RELAY_LOW);
   toggleHeat(true);
-  
+
   // tank min value should prevent a shot from being pulled, but shouldn't immediately kill a shot being poured
 
   // tank has water and boiler is empty
@@ -133,7 +117,7 @@ void baseState() {
 void pullAShotState() {
 //  Serial.println("state: pull a shot");
 
-  // shot pulling is done. 
+  // shot pulling is done.
   if (!buttonIsPressed) {
     nextState = 0;
     return;
@@ -144,14 +128,14 @@ void pullAShotState() {
 //    nextState = 3;
 //    return;
 //  }
- 
-  digitalWrite(pumpRelayPin, HIGH);
-  digitalWrite(boilerSolenoidRelayPin, LOW);
-  digitalWrite(groupSolenoidRelayPin, HIGH);
+
+  digitalWrite(pumpRelayPin, RELAY_HIGH);
+  digitalWrite(boilerSolenoidRelayPin, RELAY_LOW);
+  digitalWrite(groupSolenoidRelayPin, RELAY_HIGH);
   toggleHeat(true);
-  
+
   nextState = 1;
- 
+
 }
 
 // state 2
@@ -168,14 +152,14 @@ void fillBoilerState() {
     nextState = 3;
     return;
   }
-  
-  digitalWrite(pumpRelayPin, HIGH);
-  digitalWrite(boilerSolenoidRelayPin, HIGH);
-  digitalWrite(groupSolenoidRelayPin, LOW);
+
+  digitalWrite(pumpRelayPin, RELAY_HIGH);
+  digitalWrite(boilerSolenoidRelayPin, RELAY_HIGH);
+  digitalWrite(groupSolenoidRelayPin, RELAY_LOW);
   toggleHeat(false);
 
   nextState = 2;
-  
+
 }
 
 // state 3
@@ -186,21 +170,20 @@ void tankEmptyState() {
     return;
   }
 
-  digitalWrite(pumpRelayPin, LOW);
-  digitalWrite(boilerSolenoidRelayPin, LOW);
-  digitalWrite(groupSolenoidRelayPin, LOW);
+  digitalWrite(pumpRelayPin, RELAY_LOW);
+  digitalWrite(boilerSolenoidRelayPin, RELAY_LOW);
+  digitalWrite(groupSolenoidRelayPin, RELAY_LOW);
 
   // added protection here
   if (boilerIsEmpty) {
     toggleHeat(false);
   }
-  
-  nextState = 3; 
-  
+
+  nextState = 3;
+
 }
 
 void toggleHeat(boolean heat) {
-  digitalWrite(heatRelayPin, heat ? HIGH : LOW);
+  digitalWrite(heatRelayPin, heat ? RELAY_HIGH : RELAY_LOW);
   heatIsOn = heat;
 }
-
