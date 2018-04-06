@@ -1,15 +1,23 @@
+/* constants */
 const int RELAY_LOW = HIGH; // 4 relay module board has inverted logic
 const int RELAY_HIGH = LOW;
-const int ANALOG_THRESH = 1000; // number for "on" for ADC based on chosen resistors and
+const int ANALOG_THRESH = 1000; // arbitrary number for "on" for ADC
 
+/* digital output pins */
 const int boilerSolenoidRelayPin = 5;
 const int groupSolenoidRelayPin = 6;
 const int pumpRelayPin = 11;
 const int heatRelayPin = 12;
+
+/* digital input pins */
 const int buttonPin = 8;
-const int analogMinPin = 3;
+const int flowmeterPin = 4;
+
+/* analog input pins */
 const int analogMaxPin = 2;
+const int analogMinPin = 3;
 const int analogTankMinPin = 4;
+const int analogFlowmeterPin = 5;
 
 boolean boilerIsFull = false;
 boolean boilerIsEmpty = false;
@@ -20,6 +28,11 @@ boolean heatIsOn = false;
 int lastState = -1;
 int state = -1;
 int nextState = 0;
+
+int previousFlowmeterVal = 0;
+int flowmeterVal = 0;
+
+int flowmeterCount = 0;
 
 void setup()
 {
@@ -41,7 +54,6 @@ void setup()
 }
 
 void loop() {
-//  delay(100);
   lastState = state;
   state = nextState;
 
@@ -50,6 +62,10 @@ void loop() {
   boilerIsFull = (analogRead(analogMaxPin) < ANALOG_THRESH);
   boilerIsEmpty = (analogRead(analogMinPin) >= ANALOG_THRESH);
   tankIsEmpty = (analogRead(analogTankMinPin) >= ANALOG_THRESH);
+
+//  Serial.print(millis());
+//  Serial.print(" ");
+//  Serial.println(flowmeterVal);
 
   switch (state) {
     case 1:
@@ -91,14 +107,12 @@ void loop() {
 
 // state 0
 void baseState() {
-//  Serial.println("state: base");
-
   digitalWrite(pumpRelayPin, RELAY_LOW);
   digitalWrite(boilerSolenoidRelayPin, RELAY_LOW);
   digitalWrite(groupSolenoidRelayPin, RELAY_LOW);
   toggleHeat(true);
 
-  // tank min value should prevent a shot from being pulled, but shouldn't immediately kill a shot being poured
+  // NOTE: tank min value should prevent a shot from being pulled, but shouldn't immediately kill a shot being poured
 
   // tank has water and boiler is empty
   if (!tankIsEmpty && boilerIsEmpty) {
@@ -115,7 +129,17 @@ void baseState() {
 
 // state 1
 void pullAShotState() {
-//  Serial.println("state: pull a shot");
+  if (lastState != state) {
+    flowmeterCount = 0;
+  }
+
+  previousFlowmeterVal = flowmeterVal;
+  flowmeterVal = digitalRead(flowmeterPin);
+
+  if ((previousFlowmeterVal != flowmeterVal) && flowmeterVal) {
+    flowmeterCount++;
+    Serial.println(flowmeterCount);
+  }
 
   // shot pulling is done.
   if (!buttonIsPressed) {
@@ -173,11 +197,7 @@ void tankEmptyState() {
   digitalWrite(pumpRelayPin, RELAY_LOW);
   digitalWrite(boilerSolenoidRelayPin, RELAY_LOW);
   digitalWrite(groupSolenoidRelayPin, RELAY_LOW);
-
-  // added protection here
-  if (boilerIsEmpty) {
-    toggleHeat(false);
-  }
+  toggleHeat(!boilerIsEmpty); // added protection for heater if tank and boiler are empty
 
   nextState = 3;
 
