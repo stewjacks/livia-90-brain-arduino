@@ -1,7 +1,8 @@
 /* constants */
-const int RELAY_LOW = HIGH; // 4 relay module board has inverted logic
+const int RELAY_LOW = HIGH; // current four relay module board has inverted logic
 const int RELAY_HIGH = LOW;
-const int ANALOG_THRESH = 1000; // arbitrary number for "on" for ADC
+const int ANALOG_THRESH = 1015; // arbitrary number for "on" for ADC based on randomly chosen resistors and measurements
+const boolean FINISH_ON_EMPTY = false; // optionally stop when pulling a shot and the reservoir empties. Default false as current reservoir is large enough to finish a shot on 'empty'
 
 /* digital output pins */
 const int boilerSolenoidRelayPin = 5;
@@ -10,8 +11,8 @@ const int pumpRelayPin = 11;
 const int heatRelayPin = 12;
 
 /* digital input pins */
-const int buttonPin = 8;
 const int flowmeterPin = 4;
+const int brewButtonPin = 9;
 
 /* analog input pins */
 const int analogMaxPin = 2;
@@ -29,16 +30,19 @@ int lastState = -1;
 int state = -1;
 int nextState = 0;
 
-int previousFlowmeterVal = 0;
-int flowmeterVal = 0;
+int lastBrewButtonState = LOW;
+int brewButtonState = LOW;
 
-int flowmeterCount = 0;
+int previousFlowmeterVal = 0x0;
+int flowmeterVal = 0x0;
+
+int flowmeterCount = 0x0;
 
 void setup()
 {
   Serial.begin(9600);
 
-  pinMode(buttonPin, INPUT);
+  pinMode(brewButtonPin, INPUT);
 
   pinMode(boilerSolenoidRelayPin, OUTPUT);
   pinMode(groupSolenoidRelayPin, OUTPUT);
@@ -57,7 +61,7 @@ void loop() {
   lastState = state;
   state = nextState;
 
-  buttonIsPressed = digitalRead(buttonPin);
+  parseBrewButton();
 
   boilerIsFull = (analogRead(analogMaxPin) < ANALOG_THRESH);
   boilerIsEmpty = (analogRead(analogMinPin) >= ANALOG_THRESH);
@@ -85,7 +89,9 @@ void loop() {
   if (lastState == state) return;
 
   Serial.println("*************************");
-  Serial.print("state: ");
+  Serial.print("last state: ");
+  Serial.print(lastState);
+  Serial.print(" state: ");
   Serial.print(state);
   Serial.print(" next state: ");
   Serial.println(nextState);
@@ -148,10 +154,10 @@ void pullAShotState() {
   }
 
   // optionally kill the shot here if the tank is empty.
-//  if (tankIsEmpty) {
-//    nextState = 3;
-//    return;
-//  }
+ if (tankIsEmpty && FINISH_ON_EMPTY) {
+   nextState = 3;
+   return;
+ }
 
   digitalWrite(pumpRelayPin, RELAY_HIGH);
   digitalWrite(boilerSolenoidRelayPin, RELAY_LOW);
@@ -206,4 +212,16 @@ void tankEmptyState() {
 void toggleHeat(boolean heat) {
   digitalWrite(heatRelayPin, heat ? RELAY_HIGH : RELAY_LOW);
   heatIsOn = heat;
+}
+
+// high to low will toggle the "button pressed" state
+
+void parseBrewButton() {
+  lastBrewButtonState = brewButtonState;
+  brewButtonState = digitalRead(brewButtonPin);
+
+  // this is a button toggle
+  if (lastBrewButtonState == HIGH && brewButtonState == LOW) {
+    buttonIsPressed = !buttonIsPressed;
+  }
 }
