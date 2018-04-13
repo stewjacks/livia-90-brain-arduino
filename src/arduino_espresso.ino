@@ -11,14 +11,19 @@ const int pumpRelayPin = 11;
 const int heatRelayPin = 12;
 
 /* digital input pins */
+const int ledStopPin = 13;
+const int ledDoublePin = 11;
+const int ledSinglePin = 10;
+
 const int flowmeterPin = 4;
-const int brewButtonPin = 9;
+const int stopBrewButtonPin = 7;
+const int doubleBrewButtonPin = 8;
+const int singleBrewButtonPin = 9;
 
 /* analog input pins */
 const int analogMaxPin = 2;
 const int analogMinPin = 3;
 const int analogTankMinPin = 4;
-const int analogFlowmeterPin = 5;
 
 boolean boilerIsFull = false;
 boolean boilerIsEmpty = false;
@@ -42,7 +47,7 @@ void setup()
 {
   Serial.begin(9600);
 
-  pinMode(brewButtonPin, INPUT);
+  pinMode(singleBrewButtonPin, INPUT);
 
   pinMode(boilerSolenoidRelayPin, OUTPUT);
   pinMode(groupSolenoidRelayPin, OUTPUT);
@@ -218,7 +223,7 @@ void toggleHeat(boolean heat) {
 
 void parseBrewButton() {
   lastBrewButtonState = brewButtonState;
-  brewButtonState = digitalRead(brewButtonPin);
+  brewButtonState = digitalRead(singleBrewButtonPin);
 
   // this is a button toggle
   if (lastBrewButtonState == HIGH && brewButtonState == LOW) {
