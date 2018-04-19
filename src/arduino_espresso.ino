@@ -1,3 +1,6 @@
+#include <SPI.h>
+#include <SD.h>
+
 /* constants */
 const int RELAY_LOW = HIGH; // current four relay module board has inverted logic
 const int RELAY_HIGH = LOW;
@@ -5,15 +8,17 @@ const int ANALOG_THRESH = 1015; // arbitrary number for "on" for ADC based on ra
 const boolean FINISH_ON_EMPTY = false; // optionally stop when pulling a shot and the reservoir empties. Default false as current reservoir is large enough to finish a shot on 'empty'
 
 /* digital output pins */
-const int boilerSolenoidRelayPin = 5;
-const int groupSolenoidRelayPin = 6;
-const int pumpRelayPin = 11;
-const int heatRelayPin = 12;
+const int boilerSolenoidRelayPin = 7;
+const int groupSolenoidRelayPin = 8;
+const int pumpRelayPin = 6;
+const int heatRelayPin = 13;
 
 /* digital input pins */
-const int ledStopPin = 13;
-const int ledDoublePin = 11;
-const int ledSinglePin = 10;
+// const int ledStopPin = 13;
+// const int ledDoublePin = 11;
+// const int ledSinglePin = 10;
+
+const int chipSelect = 10;
 
 const int flowmeterPin = 4;
 const int stopBrewButtonPin = 7;
@@ -58,6 +63,13 @@ void setup()
   digitalWrite(boilerSolenoidRelayPin, RELAY_LOW);
   digitalWrite(groupSolenoidRelayPin, RELAY_LOW);
   digitalWrite(heatRelayPin, RELAY_LOW);
+
+  if (!SD.begin(chipSelect)) {
+    Serial.println("Card failed, or not present");
+    while (1);
+  } else {
+    Serial.println("card initialized.");
+  }
 
   Serial.println("starting up...");
 }
@@ -135,13 +147,24 @@ void baseState() {
   } else {
     nextState = 0;
   }
-
 }
 
 // state 1
 void pullAShotState() {
   if (lastState != state) {
     flowmeterCount = 0;
+    File dataFile = SD.open("data.txt", FILE_WRITE);
+    if (dataFile) {
+      dataFile.print(millis());
+      dataFile.print(",");
+      dataFile.println(flowmeterCount);
+      dataFile.close();
+    }
+
+    // print to the serial port too:
+    Serial.print(millis());
+    Serial.print(",");
+    Serial.println(flowmeterCount);
   }
 
   previousFlowmeterVal = flowmeterVal;
@@ -149,6 +172,21 @@ void pullAShotState() {
 
   if ((previousFlowmeterVal != flowmeterVal) && flowmeterVal) {
     flowmeterCount++;
+
+    // open the file. note that only one file can be open at a time,
+    // so you have to close this one before opening another.
+    File dataFile = SD.open("data.txt", FILE_WRITE);
+
+    // if the file is available, write to it:
+    if (dataFile) {
+      dataFile.print(millis());
+      dataFile.print(",");
+      dataFile.println(flowmeterCount);
+      dataFile.close();
+    }
+    // print to the serial port too:
+    Serial.print(millis());
+    Serial.print(",");
     Serial.println(flowmeterCount);
   }
 
