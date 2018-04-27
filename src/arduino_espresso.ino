@@ -1,8 +1,10 @@
 /* constants */
-const int RELAY_LOW = HIGH; // current four relay module board has inverted logic
-const int RELAY_HIGH = LOW;
-const int ANALOG_THRESH = 1015; // arbitrary number for "on" for ADC based on randomly chosen resistors and measurements
+const int RELAY_LOW = LOW; // current four relay module board has inverted logic
+const int RELAY_HIGH = HIGH;
 const boolean FINISH_ON_EMPTY = false; // optionally stop when pulling a shot and the reservoir empties. Default false as current reservoir is large enough to finish a shot on 'empty'
+const int TANK_THRESH = 400; // arbitrary number for "on" for ADC based on randomly chosen resistors and measurements
+const int BOILER_MAX_THRESH = 400;
+const int BOILER_MIN_THRESH = 400;
 
 /* digital output pins */
 const int boilerSolenoidRelayPin = 5;
@@ -35,19 +37,29 @@ int lastState = -1;
 int state = -1;
 int nextState = 0;
 
-int lastBrewButtonState = LOW;
-int brewButtonState = LOW;
+int lastBrewButtonState = HIGH;
+int brewButtonState = HIGH;
+int lastStopButtonState = HIGH;
+int stopButtonState = HIGH;
 
 int previousFlowmeterVal = 0x0;
 int flowmeterVal = 0x0;
 
 int flowmeterCount = 0x0;
 
+unsigned long brewButtonDownTime = 0l;
+
 void setup()
 {
   Serial.begin(9600);
 
+  // assigning pin inputs and using internal pull up resistors on Atmega328
   pinMode(singleBrewButtonPin, INPUT);
+  digitalWrite(singleBrewButtonPin, HIGH);
+  pinMode(doubleBrewButtonPin, INPUT);
+  digitalWrite(doubleBrewButtonPin, HIGH);
+  pinMode(stopBrewButtonPin, INPUT);
+  digitalWrite(stopBrewButtonPin, HIGH);
 
   pinMode(boilerSolenoidRelayPin, OUTPUT);
   pinMode(groupSolenoidRelayPin, OUTPUT);
@@ -63,18 +75,16 @@ void setup()
 }
 
 void loop() {
+  // these are done first because they have the ability to effect state. I think buttons need their own state in the future
+  parseBrewButton();
+  parseStopButton();
+
   lastState = state;
   state = nextState;
 
-  parseBrewButton();
-
-  boilerIsFull = (analogRead(analogMaxPin) < ANALOG_THRESH);
-  boilerIsEmpty = (analogRead(analogMinPin) >= ANALOG_THRESH);
-  tankIsEmpty = (analogRead(analogTankMinPin) >= ANALOG_THRESH);
-
-//  Serial.print(millis());
-//  Serial.print(" ");
-//  Serial.println(flowmeterVal);
+  boilerIsFull = (analogRead(analogMaxPin) < BOILER_MAX_THRESH);
+  boilerIsEmpty = (analogRead(analogMinPin) >= BOILER_MIN_THRESH);
+  tankIsEmpty = (analogRead(analogTankMinPin) >= TANK_THRESH);
 
   switch (state) {
     case 1:
@@ -175,7 +185,6 @@ void pullAShotState() {
 
 // state 2
 void fillBoilerState() {
-//  Serial.println("state: filling boiler");
   // tank is done filling
   if (boilerIsFull) {
     nextState = 0;
@@ -225,8 +234,27 @@ void parseBrewButton() {
   lastBrewButtonState = brewButtonState;
   brewButtonState = digitalRead(singleBrewButtonPin);
 
-  // this is a button toggle
   if (lastBrewButtonState == HIGH && brewButtonState == LOW) {
-    buttonIsPressed = !buttonIsPressed;
+    brewButtonDownTime = millis();
+  }
+
+  // this is a button toggle
+  else if (lastBrewButtonState == LOW && brewButtonState == HIGH) {
+    buttonIsPressed = true;
+  }
+
+  // way to force a fill tank by pushing two buttons for 3 seconds
+  else if (brewButtonState == LOW && stopButtonState == LOW && brewButtonDownTime + 3000l > millis()) {
+    nextState = 2;
+  }
+}
+
+void parseStopButton() {
+  lastStopButtonState = stopButtonState;
+  stopButtonState = digitalRead(stopBrewButtonPin);
+
+  // this is a button toggle
+  if (lastStopButtonState == LOW && stopButtonState == HIGH) {
+    buttonIsPressed = false;
   }
 }
