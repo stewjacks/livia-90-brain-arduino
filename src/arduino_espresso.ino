@@ -1,10 +1,12 @@
 /* constants */
 const int RELAY_LOW = LOW; // current four relay module board has inverted logic
 const int RELAY_HIGH = HIGH;
-const boolean FINISH_ON_EMPTY = false; // optionally stop when pulling a shot and the reservoir empties. Default false as current reservoir is large enough to finish a shot on 'empty'
-const int TANK_THRESH = 400; // arbitrary number for "on" for ADC based on randomly chosen resistors and measurements
+const bool FINISH_ON_EMPTY = false; // optionally stop when pulling a shot and the reservoir empties. Default false as current reservoir is large enough to finish a shot on 'empty'
+const int TANK_THRESH = 160; // arbitrary number for "on" for ADC based on randomly chosen resistors and measurements
 const int BOILER_MAX_THRESH = 400;
 const int BOILER_MIN_THRESH = 400;
+const int DEBOUNCE_DELAY = 10;
+const int SIGNAL_DEBOUNCE_COUNT = 40; // Debounce count for hardware ADC signals with thresholds
 
 /* digital output pins */
 const int boilerSolenoidRelayPin = 5;
@@ -29,27 +31,39 @@ const int analogTankMinPin = 4;
 
 const byte numChars = 32;
 
+unsigned long lastLoopTime = 0;
+
 /* Serial parsing */
 char receivedChars[numChars];
-boolean newData = false;
+bool newData = false;
 
-boolean boilerIsFull = false;
-boolean boilerIsEmpty = false;
-boolean tankIsEmpty = false;
-boolean buttonIsPressed = false;
-boolean heatIsOn = false;
-boolean machineIsOn = false; //this is the state bit for whether the machine is active
+bool boilerIsFull = false;
+int boilerIsFullDebounceCount = 0;
+
+bool boilerIsEmpty = false;
+int boilerIsEmptyDebounceCount = 0;
+
+bool tankIsEmpty = false;
+int tankIsEmptyDebounceCount = 0;
+
+bool buttonIsPressed = false;
+bool heatIsOn = false;
+bool machineIsOn = false; //this is the state bit for whether the machine is active
 
 int lastState = -1;
 int state = -1;
 int nextState = 4; //start 'off' until button
 
-int lastBrewButtonState = HIGH;
 int brewButtonState = HIGH;
-int lastStopButtonState = HIGH;
+int lastBrewButtonState = HIGH;
+unsigned long lastBrewButtonDebounceTime = 0;
+
 int stopButtonState = HIGH;
-boolean brewFlag = false;
-boolean stopFlag = false;
+int lastStopButtonState = HIGH;
+unsigned long lastStopButtonDebounceTime = 0;
+
+bool brewFlag = false;
+bool stopFlag = false;
 
 int previousFlowmeterVal = 0x0;
 int flowmeterVal = 0x0;
@@ -102,9 +116,14 @@ void loop() {
   lastState = state;
   state = nextState;
 
-  boilerIsFull = (analogRead(analogMaxPin) < BOILER_MAX_THRESH);
-  boilerIsEmpty = (analogRead(analogMinPin) >= BOILER_MIN_THRESH);
-  tankIsEmpty = (analogRead(analogTankMinPin) >= TANK_THRESH);
+  int boilerIsFullReading = (analogRead(analogMaxPin) < BOILER_MAX_THRESH);
+  int boilerIsEmptyReading = (analogRead(analogMinPin) >= BOILER_MIN_THRESH);
+  int tankIsEmptyReading = (analogRead(analogTankMinPin) >= TANK_THRESH);
+  int boilerIsEmptyRaw = analogRead(analogMaxPin);
+  
+  debounceSignal(boilerIsFullReading, boilerIsFull, boilerIsFullDebounceCount);
+  debounceSignal(boilerIsEmptyReading, boilerIsEmpty, boilerIsEmptyDebounceCount);
+  debounceSignal(tankIsEmptyReading, tankIsEmpty, tankIsEmptyDebounceCount);
 
   if (lastState != state) {
     printStateInfo();
@@ -126,6 +145,47 @@ void loop() {
     default:
       baseState();
       break;
+  }
+
+  lastLoopTime = millis();
+}
+
+/**
+ * Debounce a digital logic button
+*/
+void debounceButton(int reading, int & state, int lastState, unsigned long & lastDebounceTime) {
+  if(millis() == lastLoopTime) { return; }
+  if (reading != lastState) {
+    lastDebounceTime = millis();
+  }
+
+  if ((millis() - lastDebounceTime) > DEBOUNCE_DELAY) {
+    if (reading != state) {
+      state = reading;
+    }
+  }
+}
+
+/**
+ * Debounce a ADC signal logic 
+ * This debounce should be less time based and more signal count based. 
+ */
+
+void debounceSignal(int reading, bool & state, int & counter) {
+    // If we have gone on to the next millisecond
+  if (millis() == lastLoopTime) { return; }
+  
+  if (reading == state && counter > 0) {
+    counter--;
+  } 
+  
+  if (reading != state) {
+      counter++; 
+  }
+  // If the input has shown the same value for long enough let's switch it
+  if (counter >= SIGNAL_DEBOUNCE_COUNT) {
+    counter = 0;
+    state = reading;
   }
 }
 
@@ -245,7 +305,7 @@ void offState() {
   nextState = 4;
 }
 
-void toggleHeat(boolean heat) {
+void toggleHeat(bool heat) {
   digitalWrite(heatRelayPin, heat ? RELAY_HIGH : RELAY_LOW);
   heatIsOn = heat;
 }
@@ -253,20 +313,42 @@ void toggleHeat(boolean heat) {
 // high to low will toggle the "button pressed" state
 
 void parseBrewButton() {
-  lastBrewButtonState = brewButtonState;
-  brewButtonState = digitalRead(singleBrewButtonPin);
 
-  if (lastBrewButtonState == HIGH && brewButtonState == LOW) {
+  int lastState = brewButtonState;
+  int reading = digitalRead(singleBrewButtonPin);
+
+  // debounce
+  if (reading != lastBrewButtonState) {
+    // reset the debouncing timer
+    lastBrewButtonDebounceTime = millis();
+    lastBrewButtonState = reading;
+    Serial.print("Debounce time: ");
+    Serial.println(lastBrewButtonDebounceTime);
+  }
+
+  if ((millis() - lastBrewButtonDebounceTime) > DEBOUNCE_DELAY) {
+    if (reading != brewButtonState) {
+      brewButtonState = reading;
+      Serial.print("Debounce satisfied at: ");
+      Serial.println(millis());
+    }
+  }
+  
+  // if (lastState == brewButtonState) { return; }
+
+  if (lastState == HIGH && brewButtonState == LOW) {
     brewButtonDownTime = millis();
   }
 
-  else if (machineIsOn && brewButtonState == LOW && brewButtonDownTime + 1000l < millis()) {
+  else if (machineIsOn && brewButtonState == LOW && lastBrewButtonDebounceTime + 1000l < millis()) {
+    Serial.print("long press at: ");
+    Serial.println(millis());
     nextState = 2;
     brewFlag = true;
   }
 
   // this is a button toggle
-  else if (lastBrewButtonState == LOW && brewButtonState == HIGH) {
+  else if (lastState == LOW && brewButtonState == HIGH) {
     if (!machineIsOn) {
       machineIsOn = true;
     } else if (brewFlag) {
@@ -278,18 +360,34 @@ void parseBrewButton() {
 }
 
 void parseStopButton() {
-  lastStopButtonState = stopButtonState;
-  stopButtonState = digitalRead(stopBrewButtonPin);
 
-  if (lastStopButtonState == HIGH && stopButtonState == LOW) {
+  int lastState = stopButtonState;
+  int reading = digitalRead(stopBrewButtonPin);
+
+  // debounce
+  if (reading != lastStopButtonState) {
+    // reset the debouncing timer
+    lastStopButtonDebounceTime = millis();
+    lastStopButtonState = reading;
+  }
+
+  if ((millis() - lastStopButtonDebounceTime) > DEBOUNCE_DELAY) {
+    if (reading != stopButtonState) {
+      stopButtonState = reading;
+    }
+  }
+
+  // if (stopButtonState == lastState) { return; }
+
+  if (lastState == HIGH && stopButtonState == LOW) {
     stopButtonDownTime = millis();
-  } else if (stopButtonState == LOW && !buttonIsPressed && machineIsOn && (stopButtonDownTime + 1000l) < millis()) {
+  } else if (stopButtonState == LOW && !buttonIsPressed && machineIsOn && (lastStopButtonDebounceTime + 1000l) < millis()) {
       machineIsOn = false;
       stopFlag = true;
   }
 
   // this is a button toggle
-  else if (lastStopButtonState == LOW && stopButtonState == HIGH) {
+  else if (lastState == LOW && stopButtonState == HIGH) {
     if (stopFlag) {
       stopFlag = false;
       return;
@@ -328,7 +426,7 @@ void printStateInfo() {
 /* Serial parsing */
 
 void parseSerial() {
-    static boolean recvInProgress = false;
+    static bool recvInProgress = false;
     static byte ndx = 0;
     char startMarker = '<';
     char endMarker = '>';
