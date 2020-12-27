@@ -1,5 +1,5 @@
 /* constants */
-const int RELAY_LOW = LOW; // current four relay module board has inverted logic
+const int RELAY_LOW = LOW; // four relay module board used in prototype design had inverted logic. Production board does not. 
 const int RELAY_HIGH = HIGH;
 const bool FINISH_ON_EMPTY = false; // optionally stop when pulling a shot and the reservoir empties. Default false as current reservoir is large enough to finish a shot on 'empty'
 const int TANK_THRESH = 250; // arbitrary number for "on" for ADC based on measured value and the resistor installed
@@ -49,12 +49,12 @@ int tankIsEmptyDebounceCount = 0;
 
 bool buttonIsPressed = false;
 bool heatIsOn = false;
-bool machineIsOn = false; //this is the state bit for whether the machine is active
+bool machineIsOn = true; //this is the state bit for whether the machine is active
 bool shouldAutofill = false; //state change flag to trigger reservoir autofill state
 
 int lastState = -1;
 int state = -1;
-int nextState = 4; //start 'off' until button
+int nextState = 4; //start the machine in the off state, however if the machineIsOn flag is high it will turn on automatically.
 
 int brewButtonState = HIGH;
 int lastBrewButtonState = HIGH;
@@ -143,9 +143,6 @@ void loop() {
       break;
     case 4:
       offState();
-      break;
-    case 5: 
-      justTurnedOnState();
       break;
     default:
       baseState();
