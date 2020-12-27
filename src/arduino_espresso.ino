@@ -2,11 +2,13 @@
 const int RELAY_LOW = LOW; // current four relay module board has inverted logic
 const int RELAY_HIGH = HIGH;
 const bool FINISH_ON_EMPTY = false; // optionally stop when pulling a shot and the reservoir empties. Default false as current reservoir is large enough to finish a shot on 'empty'
-const int TANK_THRESH = 160; // arbitrary number for "on" for ADC based on randomly chosen resistors and measurements
+const int TANK_THRESH = 250; // arbitrary number for "on" for ADC based on measured value and the resistor installed
 const int BOILER_MAX_THRESH = 400;
 const int BOILER_MIN_THRESH = 400;
 const int DEBOUNCE_DELAY = 10;
 const int SIGNAL_DEBOUNCE_COUNT = 40; // Debounce count for hardware ADC signals with thresholds
+const int AVERAGE_LOOP_TIME = 525; // average loop time in microseconds as calculated by doing 1000 loops. NOTE: This should be periodically checked after large changes
+const int AUTOFILL_LOOPS = 1150000; // given average loop time, this is about a 10 minute timeout
 
 /* digital output pins */
 const int boilerSolenoidRelayPin = 5;
@@ -37,18 +39,18 @@ unsigned long lastLoopTime = 0;
 char receivedChars[numChars];
 bool newData = false;
 
-bool boilerIsFull = false;
+/* Machine sensor signals + debounce variables */
+bool boilerIsFull = true;
 int boilerIsFullDebounceCount = 0;
-
 bool boilerIsEmpty = false;
 int boilerIsEmptyDebounceCount = 0;
-
 bool tankIsEmpty = false;
 int tankIsEmptyDebounceCount = 0;
 
 bool buttonIsPressed = false;
 bool heatIsOn = false;
 bool machineIsOn = false; //this is the state bit for whether the machine is active
+bool shouldAutofill = false; //state change flag to trigger reservoir autofill state
 
 int lastState = -1;
 int state = -1;
@@ -62,8 +64,8 @@ int stopButtonState = HIGH;
 int lastStopButtonState = HIGH;
 unsigned long lastStopButtonDebounceTime = 0;
 
-bool brewFlag = false;
-bool stopFlag = false;
+bool brewButtonLongPressFlag = false;
+bool stopButtonLongPressFlag = false;
 
 int previousFlowmeterVal = 0x0;
 int flowmeterVal = 0x0;
@@ -108,10 +110,10 @@ void setup()
 
 void loop() {
   // these are done first because they have the ability to effect state. I think buttons need their own state in the future
-  parseBrewButton();
-  parseStopButton();
-  parseSerial();
-  showNewData();
+  handleBrewButton();
+  handleStopButton();
+  parseSerial(); //read signals from serial that can control state (i.e. some sort of serial wireless module)
+  handleNewSerialData();
 
   lastState = state;
   state = nextState;
@@ -142,28 +144,29 @@ void loop() {
     case 4:
       offState();
       break;
+    case 5: 
+      justTurnedOnState();
+      break;
     default:
       baseState();
       break;
   }
 
   lastLoopTime = millis();
-}
 
-/**
- * Debounce a digital logic button
-*/
-void debounceButton(int reading, int & state, int lastState, unsigned long & lastDebounceTime) {
-  if(millis() == lastLoopTime) { return; }
-  if (reading != lastState) {
-    lastDebounceTime = millis();
-  }
+  // // debug calcs for loop time approx.
+  // if (loopCount == 0) {
+  //   Serial.print("start millis: ");
+  //   Serial.println(micros());
+  // }
 
-  if ((millis() - lastDebounceTime) > DEBOUNCE_DELAY) {
-    if (reading != state) {
-      state = reading;
-    }
-  }
+  // loopCount++;
+
+  // if (loopCount == 1000) {
+  //   Serial.print("1000 loop millis: ");
+  //   Serial.println(micros());
+  // }
+  
 }
 
 /**
@@ -200,7 +203,7 @@ void baseState() {
 
   if (!machineIsOn) {
     nextState = 4;
-  } else if (!tankIsEmpty && boilerIsEmpty) {
+  } else if ((!tankIsEmpty && boilerIsEmpty) || shouldAutofill) {
     nextState = 2; // tank has water and boiler is empty
   } else if (!tankIsEmpty && buttonIsPressed) {
     nextState = 1;
@@ -250,7 +253,11 @@ void pullAShotState() {
 // state 2
 void fillBoilerState() {
   // exit condition: tank is done filling
+
+  shouldAutofill = false;
+
   if (boilerIsFull) {
+    buttonIsPressed = false; // want to return to the base state without resuming anything
     nextState = 0;
     return;
   }
@@ -274,6 +281,7 @@ void fillBoilerState() {
 void tankEmptyState() {
   // exit condition: tank is no longer empty
   if (!tankIsEmpty) {
+    buttonIsPressed = false; // want to return to the base state without resuming anything
     nextState = 0;
     return;
   }
@@ -294,6 +302,7 @@ void offState() {
     machineIsOn = true;
     buttonIsPressed = false;
     nextState = 0;
+    shouldAutofill = true;
     return;
   }
 
@@ -310,9 +319,11 @@ void toggleHeat(bool heat) {
   heatIsOn = heat;
 }
 
-// high to low will toggle the "button pressed" state
+/**
+ * Brew button stateful logic, including press debounce and long press. 
+ **/
 
-void parseBrewButton() {
+void handleBrewButton() {
 
   int lastState = brewButtonState;
   int reading = digitalRead(singleBrewButtonPin);
@@ -322,44 +333,40 @@ void parseBrewButton() {
     // reset the debouncing timer
     lastBrewButtonDebounceTime = millis();
     lastBrewButtonState = reading;
-    Serial.print("Debounce time: ");
-    Serial.println(lastBrewButtonDebounceTime);
   }
 
   if ((millis() - lastBrewButtonDebounceTime) > DEBOUNCE_DELAY) {
     if (reading != brewButtonState) {
       brewButtonState = reading;
-      Serial.print("Debounce satisfied at: ");
-      Serial.println(millis());
     }
   }
   
-  // if (lastState == brewButtonState) { return; }
-
   if (lastState == HIGH && brewButtonState == LOW) {
     brewButtonDownTime = millis();
   }
 
   else if (machineIsOn && brewButtonState == LOW && lastBrewButtonDebounceTime + 1000l < millis()) {
-    Serial.print("long press at: ");
-    Serial.println(millis());
-    nextState = 2;
-    brewFlag = true;
+    brewButtonLongPressFlag = true;
+    shouldAutofill = true;
   }
 
   // this is a button toggle
   else if (lastState == LOW && brewButtonState == HIGH) {
     if (!machineIsOn) {
       machineIsOn = true;
-    } else if (brewFlag) {
-      brewFlag = false;
+    } else if (brewButtonLongPressFlag) {
+      brewButtonLongPressFlag = false;
     } else {
       buttonIsPressed = true;
     }
   }
 }
 
-void parseStopButton() {
+/**
+ * Stop button stateful logic, including press debounce and long press. 
+ **/
+
+void handleStopButton() {
 
   int lastState = stopButtonState;
   int reading = digitalRead(stopBrewButtonPin);
@@ -377,26 +384,27 @@ void parseStopButton() {
     }
   }
 
-  // if (stopButtonState == lastState) { return; }
-
   if (lastState == HIGH && stopButtonState == LOW) {
     stopButtonDownTime = millis();
   } else if (stopButtonState == LOW && !buttonIsPressed && machineIsOn && (lastStopButtonDebounceTime + 1000l) < millis()) {
       machineIsOn = false;
-      stopFlag = true;
+      stopButtonLongPressFlag = true;
   }
 
   // this is a button toggle
   else if (lastState == LOW && stopButtonState == HIGH) {
-    if (stopFlag) {
-      stopFlag = false;
-      return;
-    }
+    if (stopButtonLongPressFlag) {
+      stopButtonLongPressFlag = false;
+    } else {
       buttonIsPressed = false;
       machineIsOn = true;
+    }
   }
 }
 
+/**
+ * Debug serial print statement. This is expensive so is only triggered on state change. 
+ **/
 void printStateInfo() {
   Serial.println("*************************");
   Serial.print("last state: ");
@@ -423,7 +431,9 @@ void printStateInfo() {
   Serial.println("*************************");
 }
 
-/* Serial parsing */
+/**
+ * Serial input parsing. Check the serial line for understood signals.
+ **/
 
 void parseSerial() {
     static bool recvInProgress = false;
@@ -459,7 +469,11 @@ void parseSerial() {
     }
 }
 
-void showNewData() {
+/**
+ * Parse and decode any signals received on the serial line.
+ **/
+
+void handleNewSerialData() {
     if (newData == true) {
       newData = false;
       String a = String(receivedChars);
