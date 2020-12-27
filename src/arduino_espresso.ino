@@ -8,7 +8,8 @@ const int BOILER_MIN_THRESH = 400;
 const int DEBOUNCE_DELAY = 10;
 const int SIGNAL_DEBOUNCE_COUNT = 40; // Debounce count for hardware ADC signals with thresholds
 const int AVERAGE_LOOP_TIME = 525; // average loop time in microseconds as calculated by doing 1000 loops. NOTE: This should be periodically checked after large changes
-const int AUTOFILL_LOOPS = 1150000; // given average loop time, this is about a 10 minute timeout
+const unsigned long AUTOFILL_LOOPS = 1725000; // given average loop time, this is about a 15 minute timeout
+const unsigned long MAX_SHOT_PULL_LOOPS = 115000; //max shot pull time is set at 1 minute
 
 /* digital output pins */
 const int boilerSolenoidRelayPin = 5;
@@ -34,6 +35,8 @@ const int analogTankMinPin = 4;
 const byte numChars = 32;
 
 unsigned long lastLoopTime = 0;
+unsigned long autofillLoopCount = 0; // the base state counts the number of standby loops to check if it should autofill at fixed intervals.
+unsigned long shotTimerLoopCount = 0;
 
 /* Serial parsing */
 char receivedChars[numChars];
@@ -114,6 +117,9 @@ void loop() {
   handleStopButton();
   parseSerial(); //read signals from serial that can control state (i.e. some sort of serial wireless module)
   handleNewSerialData();
+  
+  checkAutoRefillCounter();
+  checkShotTimerCounter();
 
   lastState = state;
   state = nextState;
@@ -121,7 +127,6 @@ void loop() {
   int boilerIsFullReading = (analogRead(analogMaxPin) < BOILER_MAX_THRESH);
   int boilerIsEmptyReading = (analogRead(analogMinPin) >= BOILER_MIN_THRESH);
   int tankIsEmptyReading = (analogRead(analogTankMinPin) >= TANK_THRESH);
-  int boilerIsEmptyRaw = analogRead(analogMaxPin);
   
   debounceSignal(boilerIsFullReading, boilerIsFull, boilerIsFullDebounceCount);
   debounceSignal(boilerIsEmptyReading, boilerIsEmpty, boilerIsEmptyDebounceCount);
@@ -189,14 +194,50 @@ void debounceSignal(int reading, bool & state, int & counter) {
   }
 }
 
+/**
+ * When in the standby base state, a counter loops to periodically check if the boiler is empty so it can be filled
+ **/
+
+void checkAutoRefillCounter() {  
+  if (state != 0) {
+    autofillLoopCount = 0;
+    return;
+  }
+  
+  if (autofillLoopCount >= AUTOFILL_LOOPS) {
+    shouldAutofill = true;
+    autofillLoopCount = 0;
+  }
+
+  autofillLoopCount++;
+}
+
+/**
+ * Shot timer counter for a hard stop after ~1 minute of continuous flow.
+ * This is a precaution to save the pump/surrounding environment from dumping the entire reservoir through the group (from experience).
+ **/
+void checkShotTimerCounter() {
+
+  if (state != 1) {
+    shotTimerLoopCount = 0;
+    return;
+  }
+
+  if (shotTimerLoopCount >= MAX_SHOT_PULL_LOOPS) {
+    buttonIsPressed = false;
+    shotTimerLoopCount = 0;
+  }
+
+  shotTimerLoopCount++;
+
+}
+
 // state 0
 void baseState() {
   digitalWrite(pumpRelayPin, RELAY_LOW);
   digitalWrite(boilerSolenoidRelayPin, RELAY_LOW);
   digitalWrite(groupSolenoidRelayPin, RELAY_LOW);
   toggleHeat(true);
-
-  // NOTE: tank min value should prevent a shot from being pulled, but shouldn't immediately kill a shot being poured
 
   if (!machineIsOn) {
     nextState = 4;
@@ -209,7 +250,6 @@ void baseState() {
   } else {
     nextState = 0;
   }
-
 }
 
 // state 1
