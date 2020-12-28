@@ -10,11 +10,11 @@ const int SIGNAL_DEBOUNCE_COUNT = 40; // Debounce count for hardware ADC signals
 const int AVERAGE_LOOP_TIME = 525; // average loop time in microseconds as calculated by doing 1000 loops. NOTE: This should be periodically checked after large changes
 const unsigned long AUTOFILL_LOOPS = 1725000; // given average loop time, this is about a 15 minute timeout
 const unsigned long MAX_SHOT_PULL_LOOPS = 115000; //max shot pull time is set at 1 minute
+const int BLINK_LED_LOOPS = 1917; // 1 second led visual cue loop time
 
 /* digital output pins */
 const int boilerSolenoidRelayPin = 5;
 const int groupSolenoidRelayPin = 6;
-const int pumpRelayPin = 11;
 const int heatRelayPin = 12;
 
 /* digital input pins */
@@ -37,6 +37,11 @@ const byte numChars = 32;
 unsigned long lastLoopTime = 0;
 unsigned long autofillLoopCount = 0; // the base state counts the number of standby loops to check if it should autofill at fixed intervals.
 unsigned long shotTimerLoopCount = 0;
+
+/* LED visual cue variables */
+int ledBlinkLoopCount = 0;
+byte ledCycleLoopCount = 0;
+int currentLEDBlinkValue = LOW;
 
 /* Serial parsing */
 char receivedChars[numChars];
@@ -91,20 +96,17 @@ void setup()
   digitalWrite(stopBrewButtonPin, HIGH);
 
   // LEDs are active low for this machine
-  pinMode(ledSinglePin, INPUT);
-  digitalWrite(ledSinglePin, HIGH);
+  pinMode(ledSinglePin, OUTPUT);
+  digitalWrite(ledSinglePin, LOW);
   pinMode(ledDoublePin, OUTPUT);
   digitalWrite(ledDoublePin, LOW);
-  // digitalWrite(ledDoublePin, LOW);
   pinMode(ledStopPin, OUTPUT);
-  digitalWrite(ledStopPin, HIGH);
+  digitalWrite(ledStopPin, LOW);
 
   pinMode(boilerSolenoidRelayPin, OUTPUT);
   digitalWrite(boilerSolenoidRelayPin, RELAY_LOW);
   pinMode(groupSolenoidRelayPin, OUTPUT);
   digitalWrite(groupSolenoidRelayPin, RELAY_LOW);
-  pinMode(pumpRelayPin, OUTPUT);
-  digitalWrite(pumpRelayPin, RELAY_LOW);
   pinMode(heatRelayPin, OUTPUT);
   digitalWrite(heatRelayPin, RELAY_LOW);
 
@@ -234,10 +236,6 @@ void checkShotTimerCounter() {
 
 // state 0
 void baseState() {
-  digitalWrite(pumpRelayPin, RELAY_LOW);
-  digitalWrite(boilerSolenoidRelayPin, RELAY_LOW);
-  digitalWrite(groupSolenoidRelayPin, RELAY_LOW);
-  toggleHeat(true);
 
   if (!machineIsOn) {
     nextState = 4;
@@ -250,10 +248,20 @@ void baseState() {
   } else {
     nextState = 0;
   }
+  
+  setLEDs(HIGH, HIGH, HIGH);
+  toggleHeat(true);
+
+  digitalWrite(boilerSolenoidRelayPin, RELAY_LOW);
+  digitalWrite(groupSolenoidRelayPin, RELAY_LOW);
+
 }
 
 // state 1
 void pullAShotState() {
+  
+  setLEDs(LOW, HIGH, HIGH);
+
   if (lastState != state) {
     flowmeterCount = 0;
   }
@@ -278,7 +286,6 @@ void pullAShotState() {
    return;
  }
 
-  digitalWrite(pumpRelayPin, RELAY_HIGH);
   digitalWrite(boilerSolenoidRelayPin, RELAY_LOW);
   digitalWrite(groupSolenoidRelayPin, RELAY_HIGH);
   toggleHeat(true);
@@ -289,8 +296,10 @@ void pullAShotState() {
 
 // state 2
 void fillBoilerState() {
-  // exit condition: tank is done filling
 
+  cycleLEDs();
+
+  // exit condition: tank is done filling
   shouldAutofill = false;
 
   if (boilerIsFull) {
@@ -305,7 +314,6 @@ void fillBoilerState() {
     return;
   }
 
-  digitalWrite(pumpRelayPin, RELAY_HIGH);
   digitalWrite(boilerSolenoidRelayPin, RELAY_HIGH);
   digitalWrite(groupSolenoidRelayPin, RELAY_LOW);
   toggleHeat(false);
@@ -316,6 +324,9 @@ void fillBoilerState() {
 
 // state 3
 void tankEmptyState() {
+
+  blinkLEDs();
+
   // exit condition: tank is no longer empty
   if (!tankIsEmpty) {
     buttonIsPressed = false; // want to return to the base state without resuming anything
@@ -323,7 +334,6 @@ void tankEmptyState() {
     return;
   }
 
-  digitalWrite(pumpRelayPin, RELAY_LOW);
   digitalWrite(boilerSolenoidRelayPin, RELAY_LOW);
   digitalWrite(groupSolenoidRelayPin, RELAY_LOW);
   toggleHeat(!boilerIsEmpty); // added protection for heater if tank and boiler are empty
@@ -334,6 +344,8 @@ void tankEmptyState() {
 
 // state 4
 void offState() {
+  setLEDs(HIGH, HIGH, HIGH);
+  
   // exit condition: machine is turned on
   if (buttonIsPressed || machineIsOn) {
     machineIsOn = true;
@@ -343,7 +355,6 @@ void offState() {
     return;
   }
 
-  digitalWrite(pumpRelayPin, RELAY_LOW);
   digitalWrite(boilerSolenoidRelayPin, RELAY_LOW);
   digitalWrite(groupSolenoidRelayPin, RELAY_LOW);
   toggleHeat(false); // added protection for heater if tank and boiler are empty
@@ -354,6 +365,48 @@ void offState() {
 void toggleHeat(bool heat) {
   digitalWrite(heatRelayPin, heat ? RELAY_HIGH : RELAY_LOW);
   heatIsOn = heat;
+}
+
+void setLEDs(int singleLED, int doubleLED, int stopLED) {
+  digitalWrite(ledSinglePin, singleLED);
+  digitalWrite(ledDoublePin, doubleLED);
+  digitalWrite(ledStopPin, stopLED);
+}
+
+/**
+ * Blinking LEDs -> visual indicator for an empty reservoir
+ **/
+
+void blinkLEDs() {
+
+  ledBlinkLoopCount++;
+
+  if (ledBlinkLoopCount >= BLINK_LED_LOOPS) {
+    ledBlinkLoopCount = 0;
+    currentLEDBlinkValue = !currentLEDBlinkValue;
+  }
+
+  setLEDs(currentLEDBlinkValue, currentLEDBlinkValue, currentLEDBlinkValue);
+
+}
+
+/**
+ * Cycle LEDs -> visual indicator for boiler filling
+ **/
+void cycleLEDs() {
+  ledBlinkLoopCount++;
+  if (ledBlinkLoopCount >= BLINK_LED_LOOPS) {
+    ledBlinkLoopCount = 0;
+    ledCycleLoopCount = (ledCycleLoopCount + 1) % 3;
+  }
+
+  if (ledCycleLoopCount == 0) {
+    setLEDs(HIGH, HIGH, LOW);
+  } else if (ledCycleLoopCount == 1) {
+    setLEDs(HIGH, LOW, LOW);
+  } else {
+    setLEDs(LOW, LOW, LOW);
+  }
 }
 
 /**
