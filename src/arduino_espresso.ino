@@ -9,14 +9,15 @@ const int BOILER_MAX_THRESH = 400;
 const int BOILER_MIN_THRESH = 400;
 const int DEBOUNCE_DELAY = 10;
 const int SIGNAL_DEBOUNCE_COUNT = 40; // Debounce count for hardware ADC signals with thresholds
+const int FLOWMETER_DEBOUNCE_COUNT = 10;
 const int AVERAGE_LOOP_TIME = 525; // average loop time in microseconds as calculated by doing 1000 loops. NOTE: This should be periodically checked after large changes
 const unsigned long AUTOFILL_LOOPS = 1725000l; // given average loop time, this is about a 15 minute timeout
 const unsigned long MAX_SHOT_PULL_LOOPS = 115000l; //max shot pull time is set at 1 minute
 const int BLINK_LED_LOOPS = 1917; // 1 second led visual cue loop time
 
 /* Arbitrary flowmeter max and min values for auto pulling shots */
-const int SHOT_FLOW_MIN = 25;
-const int SHOT_FLOW_MAX = 400;
+const int SHOT_FLOW_MIN = 50; //~11.25g of water
+const int SHOT_FLOW_MAX = 600; //~135g of water
 
 const int SINGLE_SHOT_FLOW_ADDR = 4;
 const int DOUBLE_SHOT_FLOW_ADDR = 6;
@@ -90,8 +91,9 @@ int doubleShotFlowmeterCount = 0;
 bool brewButtonLongPressFlag = false;
 bool stopButtonLongPressFlag = false;
 
-int previousFlowmeterVal = 0x0;
-int flowmeterVal = 0x0;
+bool previousFlowmeterVal = false;
+bool flowmeterVal = false;
+int flowmeterDebounceCount = 0x0;
 
 int flowmeterCount = 0x0;
 
@@ -159,9 +161,9 @@ void loop() {
   int boilerIsEmptyReading = (analogRead(analogMinPin) >= BOILER_MIN_THRESH);
   int tankIsEmptyReading = (analogRead(analogTankMinPin) >= TANK_THRESH);
   
-  debounceSignal(boilerIsFullReading, boilerIsFull, boilerIsFullDebounceCount);
-  debounceSignal(boilerIsEmptyReading, boilerIsEmpty, boilerIsEmptyDebounceCount);
-  debounceSignal(tankIsEmptyReading, tankIsEmpty, tankIsEmptyDebounceCount);
+  debounceSignal(boilerIsFullReading, boilerIsFull, boilerIsFullDebounceCount, SIGNAL_DEBOUNCE_COUNT);
+  debounceSignal(boilerIsEmptyReading, boilerIsEmpty, boilerIsEmptyDebounceCount, SIGNAL_DEBOUNCE_COUNT);
+  debounceSignal(tankIsEmptyReading, tankIsEmpty, tankIsEmptyDebounceCount, SIGNAL_DEBOUNCE_COUNT);
 
   if (lastState != state) {
     printStateInfo();
@@ -207,7 +209,7 @@ void loop() {
  * This debounce should be less time based and more signal count based. 
  */
 
-void debounceSignal(int reading, bool & state, int & counter) {
+void debounceSignal(int reading, bool & state, int & counter, int & debounce_count) {
     // If we have gone on to the next millisecond
   if (millis() == lastLoopTime) { return; }
   
@@ -219,7 +221,7 @@ void debounceSignal(int reading, bool & state, int & counter) {
       counter++; 
   }
   // If the input has shown the same value for long enough let's switch it
-  if (counter >= SIGNAL_DEBOUNCE_COUNT) {
+  if (counter >= debounce_count) {
     counter = 0;
     state = reading;
   }
@@ -296,11 +298,22 @@ void pullAShotState() {
   }
 
   previousFlowmeterVal = flowmeterVal;
-  flowmeterVal = digitalRead(flowmeterPin);
+  int tempFlowmeterVal = digitalRead(flowmeterPin);
 
-  if ((previousFlowmeterVal != flowmeterVal) && flowmeterVal) {
+  debounceSignal(tempFlowmeterVal, flowmeterVal, flowmeterDebounceCount, FLOWMETER_DEBOUNCE_COUNT);
+
+  if (previousFlowmeterVal != flowmeterVal) {
     flowmeterCount++;
-    Serial.println(flowmeterCount);
+    Serial.print(flowmeterCount);
+    Serial.print(",");
+    Serial.println(millis());
+  }
+
+  // TODO: this should be the user-provided value OR shot_flow_max
+  if (flowmeterCount >= SHOT_FLOW_MAX) {
+    buttonIsPressed = false;
+    nextState = 0;
+    return;
   }
 
   // shot pulling is done.
