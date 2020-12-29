@@ -1,3 +1,5 @@
+#include <EEPROM.h>
+
 /* constants */
 const int RELAY_LOW = LOW; // four relay module board used in prototype design had inverted logic. Production board does not. 
 const int RELAY_HIGH = HIGH;
@@ -8,9 +10,16 @@ const int BOILER_MIN_THRESH = 400;
 const int DEBOUNCE_DELAY = 10;
 const int SIGNAL_DEBOUNCE_COUNT = 40; // Debounce count for hardware ADC signals with thresholds
 const int AVERAGE_LOOP_TIME = 525; // average loop time in microseconds as calculated by doing 1000 loops. NOTE: This should be periodically checked after large changes
-const unsigned long AUTOFILL_LOOPS = 1725000; // given average loop time, this is about a 15 minute timeout
-const unsigned long MAX_SHOT_PULL_LOOPS = 115000; //max shot pull time is set at 1 minute
+const unsigned long AUTOFILL_LOOPS = 1725000l; // given average loop time, this is about a 15 minute timeout
+const unsigned long MAX_SHOT_PULL_LOOPS = 115000l; //max shot pull time is set at 1 minute
 const int BLINK_LED_LOOPS = 1917; // 1 second led visual cue loop time
+
+/* Arbitrary flowmeter max and min values for auto pulling shots */
+const int SHOT_FLOW_MIN = 25;
+const int SHOT_FLOW_MAX = 400;
+
+const int SINGLE_SHOT_FLOW_ADDR = 4;
+const int DOUBLE_SHOT_FLOW_ADDR = 6;
 
 /* digital output pins */
 const int boilerSolenoidRelayPin = 5;
@@ -34,9 +43,9 @@ const int analogTankMinPin = 4;
 
 const byte numChars = 32;
 
-unsigned long lastLoopTime = 0;
-unsigned long autofillLoopCount = 0; // the base state counts the number of standby loops to check if it should autofill at fixed intervals.
-unsigned long shotTimerLoopCount = 0;
+unsigned long lastLoopTime = 0l;
+unsigned long autofillLoopCount = 0l; // the base state counts the number of standby loops to check if it should autofill at fixed intervals.
+unsigned long shotTimerLoopCount = 0l;
 
 /* LED visual cue variables */
 int ledBlinkLoopCount = 0;
@@ -66,11 +75,17 @@ int nextState = 4; //start the machine in the off state, however if the machineI
 
 int brewButtonState = HIGH;
 int lastBrewButtonState = HIGH;
-unsigned long lastBrewButtonDebounceTime = 0;
+unsigned long lastBrewButtonDebounceTime = 0l;
 
 int stopButtonState = HIGH;
 int lastStopButtonState = HIGH;
-unsigned long lastStopButtonDebounceTime = 0;
+unsigned long lastStopButtonDebounceTime = 0l;
+
+/* user-configured flowmeter vals */ 
+bool userHasSetSingleShotCount = false;
+bool userHasSetDoubleShotCount = false;
+int singleShotFlowmeterCount = 0;
+int doubleShotFlowmeterCount = 0;
 
 bool brewButtonLongPressFlag = false;
 bool stopButtonLongPressFlag = false;
@@ -86,6 +101,8 @@ unsigned long stopButtonDownTime = 0l;
 void setup()
 {
   Serial.begin(9600);
+
+  Serial.println("starting up...");
 
   // assigning pin inputs and using internal pull up resistors on Atmega328
   pinMode(singleBrewButtonPin, INPUT);
@@ -110,7 +127,19 @@ void setup()
   pinMode(heatRelayPin, OUTPUT);
   digitalWrite(heatRelayPin, RELAY_LOW);
 
-  Serial.println("starting up...");
+  /* EEPROM stored flowmeter values */
+  singleShotFlowmeterCount = readIntFromEEPROM(SINGLE_SHOT_FLOW_ADDR);
+  doubleShotFlowmeterCount = readIntFromEEPROM(DOUBLE_SHOT_FLOW_ADDR);
+  
+  userHasSetSingleShotCount = SHOT_FLOW_MIN <= singleShotFlowmeterCount && singleShotFlowmeterCount <= SHOT_FLOW_MAX;
+  userHasSetDoubleShotCount = SHOT_FLOW_MIN <= doubleShotFlowmeterCount && doubleShotFlowmeterCount <= SHOT_FLOW_MAX;
+
+  Serial.println("EEPROM:");
+  Serial.print("single val ");
+  Serial.println(singleShotFlowmeterCount);
+  Serial.print("double val ");
+  Serial.println(doubleShotFlowmeterCount);
+
 }
 
 void loop() {
@@ -490,6 +519,20 @@ void handleStopButton() {
       machineIsOn = true;
     }
   }
+}
+
+void writeIntIntoEEPROM(int addr, int number)
+{ 
+  byte b1 = number >> 8;
+  byte b2 = number & 0xFF;
+  EEPROM.write(addr, b1);
+  EEPROM.write(addr + 1, b2);
+}
+
+int readIntFromEEPROM(int addr) {
+  byte b1 = EEPROM.read(addr);
+  byte b2 = EEPROM.read(addr + 1);
+  return (b1 << 8) + b2;
 }
 
 /**
