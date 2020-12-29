@@ -17,7 +17,7 @@ const int BLINK_LED_LOOPS = 1917; // 1 second led visual cue loop time
 
 /* Arbitrary flowmeter max and min values for auto pulling shots */
 const int SHOT_FLOW_MIN = 50; //~11.25g of water
-const int SHOT_FLOW_MAX = 600; //~135g of water
+const int SHOT_FLOW_MAX = 800; //~180g of water
 
 const int SINGLE_SHOT_FLOW_ADDR = 4;
 const int DOUBLE_SHOT_FLOW_ADDR = 6;
@@ -65,7 +65,9 @@ int boilerIsEmptyDebounceCount = 0;
 bool tankIsEmpty = false;
 int tankIsEmptyDebounceCount = 0;
 
-bool buttonIsPressed = false;
+bool singleButtonPressed = false;
+bool doubleButtonPressed = false;
+bool stopButtonPressed = false;
 bool heatIsOn = false;
 bool machineIsOn = true; //this is the state bit for whether the machine is active
 bool shouldAutofill = false; //state change flag to trigger reservoir autofill state
@@ -74,26 +76,32 @@ int lastState = -1;
 int state = -1;
 int nextState = 4; //start the machine in the off state, however if the machineIsOn flag is high it will turn on automatically.
 
-int brewButtonState = HIGH;
-int lastBrewButtonState = HIGH;
-unsigned long lastBrewButtonDebounceTime = 0l;
+int singleBrewButtonState = HIGH;
+int lastSingleBrewButtonState = HIGH;
+unsigned long lastSingleBrewButtonDebounceTime = 0l;
+
+int doubleBrewButtonState = HIGH;
+int lastDoubleBrewButtonState = HIGH;
+unsigned long lastDoubleBrewButtonDebounceTime = 0l;
 
 int stopButtonState = HIGH;
 int lastStopButtonState = HIGH;
 unsigned long lastStopButtonDebounceTime = 0l;
 
 /* user-configured flowmeter vals */ 
-bool userHasSetSingleShotCount = false;
-bool userHasSetDoubleShotCount = false;
 int singleShotFlowmeterCount = 0;
 int doubleShotFlowmeterCount = 0;
 
-bool brewButtonLongPressFlag = false;
+bool singleBrewButtonLongPressFlag = false;
+bool doubleBrewButtonLongPressFlag = false;
 bool stopButtonLongPressFlag = false;
 
 bool previousFlowmeterVal = false;
 bool flowmeterVal = false;
 int flowmeterDebounceCount = 0x0;
+
+bool shouldSaveSingleFlowmeterValue = false;
+bool shouldSaveDoubleFlowmeterValue = false;
 
 int flowmeterCount = 0x0;
 
@@ -133,8 +141,8 @@ void setup()
   singleShotFlowmeterCount = readIntFromEEPROM(SINGLE_SHOT_FLOW_ADDR);
   doubleShotFlowmeterCount = readIntFromEEPROM(DOUBLE_SHOT_FLOW_ADDR);
   
-  userHasSetSingleShotCount = SHOT_FLOW_MIN <= singleShotFlowmeterCount && singleShotFlowmeterCount <= SHOT_FLOW_MAX;
-  userHasSetDoubleShotCount = SHOT_FLOW_MIN <= doubleShotFlowmeterCount && doubleShotFlowmeterCount <= SHOT_FLOW_MAX;
+  singleShotFlowmeterCount = min(max(singleShotFlowmeterCount, SHOT_FLOW_MIN), SHOT_FLOW_MAX);
+  doubleShotFlowmeterCount = min(max(doubleShotFlowmeterCount, SHOT_FLOW_MIN), SHOT_FLOW_MAX);
 
   Serial.println("EEPROM:");
   Serial.print("single val ");
@@ -146,7 +154,8 @@ void setup()
 
 void loop() {
   // these are done first because they have the ability to effect state. I think buttons need their own state in the future
-  handleBrewButton();
+  handleSingleBrewButton();
+  handleDoubleBrewButton();
   handleStopButton();
   parseSerial(); //read signals from serial that can control state (i.e. some sort of serial wireless module)
   handleNewSerialData();
@@ -182,6 +191,9 @@ void loop() {
     case 4:
       offState();
       break;
+    case 5:
+      programState();
+      break;
     default:
       baseState();
       break;
@@ -198,7 +210,7 @@ void loop() {
   // loopCount++;
 
   // if (loopCount == 1000) {
-  //   Serial.print("1000 loop millis: ");
+  //   Serial.print("1000 loop micros: ");
   //   Serial.println(micros());
   // }
   
@@ -209,7 +221,7 @@ void loop() {
  * This debounce should be less time based and more signal count based. 
  */
 
-void debounceSignal(int reading, bool & state, int & counter, int & debounce_count) {
+void debounceSignal(int reading, bool & state, int & counter, int debounce_count) {
     // If we have gone on to the next millisecond
   if (millis() == lastLoopTime) { return; }
   
@@ -231,7 +243,7 @@ void debounceSignal(int reading, bool & state, int & counter, int & debounce_cou
  * When in the standby base state, a counter loops to periodically check if the boiler is empty so it can be filled
  **/
 
-void checkAutoRefillCounter() {  
+void checkAutoRefillCounter() {
   if (state != 0) {
     autofillLoopCount = 0;
     return;
@@ -257,7 +269,7 @@ void checkShotTimerCounter() {
   }
 
   if (shotTimerLoopCount >= MAX_SHOT_PULL_LOOPS) {
-    buttonIsPressed = false;
+    singleButtonPressed = false;
     shotTimerLoopCount = 0;
   }
 
@@ -269,16 +281,20 @@ void checkShotTimerCounter() {
 void baseState() {
 
   if (!machineIsOn) {
-    nextState = 4;
-  } else if ((!tankIsEmpty && boilerIsEmpty) || shouldAutofill) {
-    nextState = 2; // tank has water and boiler is empty
-  } else if (!tankIsEmpty && buttonIsPressed) {
-    nextState = 1;
+    nextState = 4; // put the machine to sleep
   } else if (tankIsEmpty) {
-    nextState = 3;
+    nextState = 3; // tank is empty: wait until filled
+  } else if (boilerIsEmpty || shouldAutofill) {
+    nextState = 2; // tank has water and boiler is empty
+  } else if (stopButtonLongPressFlag) {
+    nextState = 5; // go into program mode
+  } else if (singleButtonPressed || doubleButtonPressed) {
+    nextState = 1; // pull a shot
   } else {
     nextState = 0;
   }
+
+  stopButtonPressed = false;
   
   setLEDs(HIGH, HIGH, HIGH);
   toggleHeat(true);
@@ -291,11 +307,13 @@ void baseState() {
 // state 1
 void pullAShotState() {
   
-  setLEDs(LOW, HIGH, HIGH);
+  setLEDs(singleButtonPressed ? LOW : HIGH, doubleButtonPressed ? LOW : HIGH, HIGH);
 
   if (lastState != state) {
     flowmeterCount = 0;
   }
+
+  int flowmeterMaxValue = singleButtonPressed ? singleShotFlowmeterCount : doubleShotFlowmeterCount;
 
   previousFlowmeterVal = flowmeterVal;
   int tempFlowmeterVal = digitalRead(flowmeterPin);
@@ -309,30 +327,25 @@ void pullAShotState() {
     Serial.println(millis());
   }
 
-  // TODO: this should be the user-provided value OR shot_flow_max
-  if (flowmeterCount >= SHOT_FLOW_MAX) {
-    buttonIsPressed = false;
-    nextState = 0;
-    return;
-  }
-
-  // shot pulling is done.
-  if (!buttonIsPressed) {
-    nextState = 0;
-    return;
-  }
-
-  // optionally kill the shot here if the tank is empty.
- if (tankIsEmpty && FINISH_ON_EMPTY) {
-   nextState = 3;
-   return;
- }
-
   digitalWrite(boilerSolenoidRelayPin, RELAY_LOW);
   digitalWrite(groupSolenoidRelayPin, RELAY_HIGH);
   toggleHeat(true);
 
   nextState = 1;
+
+  if (stopButtonPressed) {
+    handlePersistFlowmeterValue(flowmeterCount);
+  }
+
+  // Automatic or manual finish
+  if (stopButtonPressed || flowmeterCount >= flowmeterMaxValue) {
+    nextState = 6;
+  }
+
+  // optionally kill the shot here if the tank is empty.
+ if (tankIsEmpty && FINISH_ON_EMPTY) {
+   nextState = 3;
+ }
 
 }
 
@@ -344,23 +357,20 @@ void fillBoilerState() {
   // exit condition: tank is done filling
   shouldAutofill = false;
 
-  if (boilerIsFull) {
-    buttonIsPressed = false; // want to return to the base state without resuming anything
-    nextState = 0;
-    return;
-  }
-
-  // if the tank empties, go back to base state to deal with shutting off pump
-  if (tankIsEmpty) {
-    nextState = 3;
-    return;
-  }
-
   digitalWrite(boilerSolenoidRelayPin, RELAY_HIGH);
   digitalWrite(groupSolenoidRelayPin, RELAY_LOW);
   toggleHeat(false);
 
   nextState = 2;
+
+  if (boilerIsFull) {
+    nextState = 6;
+  }
+
+  // if the tank runs out, stop the pump
+  if (tankIsEmpty) {
+    nextState = 3;
+  }
 
 }
 
@@ -369,39 +379,73 @@ void tankEmptyState() {
 
   blinkLEDs();
 
-  // exit condition: tank is no longer empty
-  if (!tankIsEmpty) {
-    buttonIsPressed = false; // want to return to the base state without resuming anything
-    nextState = 0;
-    return;
-  }
-
   digitalWrite(boilerSolenoidRelayPin, RELAY_LOW);
   digitalWrite(groupSolenoidRelayPin, RELAY_LOW);
   toggleHeat(!boilerIsEmpty); // added protection for heater if tank and boiler are empty
 
   nextState = 3;
 
+  // exit condition: tank is no longer empty
+  if (!tankIsEmpty) {
+    nextState = 6;
+  }
 }
 
 // state 4
 void offState() {
   setLEDs(HIGH, HIGH, HIGH);
-  
-  // exit condition: machine is turned on
-  if (buttonIsPressed || machineIsOn) {
-    machineIsOn = true;
-    buttonIsPressed = false;
-    nextState = 0;
-    shouldAutofill = true;
-    return;
-  }
-
   digitalWrite(boilerSolenoidRelayPin, RELAY_LOW);
   digitalWrite(groupSolenoidRelayPin, RELAY_LOW);
   toggleHeat(false); // added protection for heater if tank and boiler are empty
 
   nextState = 4;
+
+  // exit condition: machine is turned on
+  if (singleButtonPressed || doubleButtonPressed || machineIsOn) {
+    machineIsOn = true;
+    nextState = 6;
+    shouldAutofill = true;
+  }
+}
+
+// state 5
+void programState() {
+
+  setLEDs(LOW, LOW, HIGH);
+  digitalWrite(boilerSolenoidRelayPin, RELAY_LOW);
+  digitalWrite(groupSolenoidRelayPin, RELAY_LOW);
+  toggleHeat(true);
+
+  if (singleButtonPressed) {
+    singleButtonPressed = true;
+    doubleButtonPressed = false;
+    stopButtonPressed = false;
+    shouldSaveSingleFlowmeterValue = true;
+    nextState = 1;
+  } else if (doubleButtonPressed) {
+    doubleButtonPressed = true;
+    stopButtonPressed = false;
+    shouldSaveDoubleFlowmeterValue = true;
+    nextState = 1;
+  } else if (stopButtonPressed) {
+    stopButtonPressed = false;
+    nextState = 6;
+    // this is the cancel condition
+  } else {
+    nextState = 5;
+  }
+}
+
+// state 6: reset all variables before heading into base state. Used to negate user input between states (auto fill, empty reservoir, etc)
+void resetVariablesState() {
+  singleButtonPressed = false;
+  doubleButtonPressed = false;
+  stopButtonPressed = false;
+  singleBrewButtonLongPressFlag = false;
+  doubleBrewButtonLongPressFlag = false;
+  stopButtonLongPressFlag = false;
+  
+  nextState = 0;
 }
 
 void toggleHeat(bool heat) {
@@ -451,45 +495,107 @@ void cycleLEDs() {
   }
 }
 
+void handlePersistFlowmeterValue(int & value) {
+  int constrainedValue = min(max(value, SHOT_FLOW_MIN), SHOT_FLOW_MAX);
+  
+  if (shouldSaveSingleFlowmeterValue) {
+    writeIntIntoEEPROM(SINGLE_SHOT_FLOW_ADDR, constrainedValue);
+    singleShotFlowmeterCount = constrainedValue;
+  } else if (shouldSaveDoubleFlowmeterValue) {
+    writeIntIntoEEPROM(DOUBLE_SHOT_FLOW_ADDR, constrainedValue);
+    doubleShotFlowmeterCount = constrainedValue;
+  }
+
+  shouldSaveSingleFlowmeterValue = false;
+  shouldSaveDoubleFlowmeterValue = false;
+}
+
 /**
- * Brew button stateful logic, including press debounce and long press. 
+ * Single shot brew button stateful logic, including press debounce and long press. 
+ * TODO: Single & double are copy-pasta & can be unified
  **/
 
-void handleBrewButton() {
+void handleSingleBrewButton() {
 
-  int lastState = brewButtonState;
+  int lastState = singleBrewButtonState;
   int reading = digitalRead(singleBrewButtonPin);
 
   // debounce
-  if (reading != lastBrewButtonState) {
+  if (reading != lastSingleBrewButtonState) {
     // reset the debouncing timer
-    lastBrewButtonDebounceTime = millis();
-    lastBrewButtonState = reading;
+    lastSingleBrewButtonDebounceTime = millis();
+    lastSingleBrewButtonState = reading;
   }
 
-  if ((millis() - lastBrewButtonDebounceTime) > DEBOUNCE_DELAY) {
-    if (reading != brewButtonState) {
-      brewButtonState = reading;
+  if ((millis() - lastSingleBrewButtonDebounceTime) > DEBOUNCE_DELAY) {
+    if (reading != singleBrewButtonState) {
+      singleBrewButtonState = reading;
     }
   }
   
-  if (lastState == HIGH && brewButtonState == LOW) {
+  if (lastState == HIGH && singleBrewButtonState == LOW) {
     brewButtonDownTime = millis();
   }
 
-  else if (machineIsOn && brewButtonState == LOW && lastBrewButtonDebounceTime + 1000l < millis()) {
-    brewButtonLongPressFlag = true;
+  else if (machineIsOn && singleBrewButtonState == LOW && lastSingleBrewButtonDebounceTime + 1000l < millis()) {
+    singleBrewButtonLongPressFlag = true;
     shouldAutofill = true;
   }
 
   // this is a button toggle
-  else if (lastState == LOW && brewButtonState == HIGH) {
+  else if (lastState == LOW && singleBrewButtonState == HIGH) {
     if (!machineIsOn) {
       machineIsOn = true;
-    } else if (brewButtonLongPressFlag) {
-      brewButtonLongPressFlag = false;
+    } else if (singleBrewButtonLongPressFlag) {
+      singleBrewButtonLongPressFlag = false;
     } else {
-      buttonIsPressed = true;
+      singleButtonPressed = true;
+      doubleButtonPressed = false;
+    }
+  }
+}
+
+/**
+ * Double shot brew button stateful logic, including press debounce and long press. 
+ * TODO: combine with single
+ **/
+
+void handleDoubleBrewButton() {
+
+  int lastState = doubleBrewButtonState;
+  int reading = digitalRead(doubleBrewButtonPin);
+
+  // debounce
+  if (reading != lastDoubleBrewButtonState) {
+    // reset the debouncing timer
+    lastDoubleBrewButtonDebounceTime = millis();
+    lastDoubleBrewButtonState = reading;
+  }
+
+  if ((millis() - lastDoubleBrewButtonDebounceTime) > DEBOUNCE_DELAY) {
+    if (reading != doubleBrewButtonState) {
+      doubleBrewButtonState = reading;
+    }
+  }
+  
+  if (lastState == HIGH && doubleBrewButtonState == LOW) {
+    brewButtonDownTime = millis();
+  }
+
+  else if (machineIsOn && doubleBrewButtonState == LOW && lastDoubleBrewButtonDebounceTime + 1000l < millis()) {
+    doubleBrewButtonLongPressFlag = true;
+    machineIsOn = false;
+  }
+
+  // this is a button toggle
+  else if (lastState == LOW && doubleBrewButtonState == HIGH) {
+    if (!machineIsOn) {
+      machineIsOn = true;
+    } else if (doubleBrewButtonLongPressFlag) {
+      doubleBrewButtonLongPressFlag = false;
+    } else {
+      singleButtonPressed = false;
+      doubleButtonPressed = true;
     }
   }
 }
@@ -518,8 +624,7 @@ void handleStopButton() {
 
   if (lastState == HIGH && stopButtonState == LOW) {
     stopButtonDownTime = millis();
-  } else if (stopButtonState == LOW && !buttonIsPressed && machineIsOn && (lastStopButtonDebounceTime + 1000l) < millis()) {
-      machineIsOn = false;
+  } else if (stopButtonState == LOW && !singleButtonPressed && !doubleButtonPressed && machineIsOn && (lastStopButtonDebounceTime + 1000l) < millis()) {
       stopButtonLongPressFlag = true;
   }
 
@@ -528,16 +633,20 @@ void handleStopButton() {
     if (stopButtonLongPressFlag) {
       stopButtonLongPressFlag = false;
     } else {
-      buttonIsPressed = false;
+      singleButtonPressed = false;
+      doubleButtonPressed = false;
       machineIsOn = true;
+      stopButtonPressed = true;
     }
   }
 }
+/**
+ * EEPROM read/write int (2 bytes)
+ **/
 
-void writeIntIntoEEPROM(int addr, int number)
-{ 
-  byte b1 = number >> 8;
-  byte b2 = number & 0xFF;
+void writeIntIntoEEPROM(int addr, int val) { 
+  byte b1 = val >> 8;
+  byte b2 = val & 0xFF;
   EEPROM.write(addr, b1);
   EEPROM.write(addr + 1, b2);
 }
@@ -568,8 +677,10 @@ void printStateInfo() {
   Serial.print("tank is empty: ");
   Serial.print(analogRead(analogTankMinPin));
   Serial.println(tankIsEmpty ? " true" : " false");
-  Serial.print("button is pressed: ");
-  Serial.println(buttonIsPressed ? "true" : "false");
+  Serial.print("single is pressed: ");
+  Serial.println(singleButtonPressed ? "true" : "false");
+  Serial.print("double is pressed: ");
+  Serial.println(doubleButtonPressed ? "true" : "false");
   Serial.print("heat is on: ");
   Serial.println(heatIsOn ? "true" : "false");
   Serial.print("machine is on: ");
