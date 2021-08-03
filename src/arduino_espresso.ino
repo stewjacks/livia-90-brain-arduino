@@ -248,8 +248,9 @@ void checkAutoRefillCounter() {
   }
   
   if (autofillLoopCount >= AUTOFILL_LOOPS) {
-    shouldAutofill = true;
+    shouldAutofill = !boilerIsFull;
     autofillLoopCount = 0;
+    return;
   }
 
   autofillLoopCount++;
@@ -362,20 +363,22 @@ void fillBoilerState() {
   // exit condition: tank is done filling
   shouldAutofill = false;
 
-  digitalWrite(boilerSolenoidRelayPin, RELAY_HIGH);
-  digitalWrite(groupSolenoidRelayPin, RELAY_LOW);
-  toggleHeat(false);
-
   nextState = 2;
 
   if (boilerIsFull) {
     nextState = 6;
+    return;
   }
 
   // if the tank runs out, stop the pump
   if (tankIsEmpty) {
     nextState = 3;
+    return;
   }
+
+  digitalWrite(boilerSolenoidRelayPin, RELAY_HIGH);
+  digitalWrite(groupSolenoidRelayPin, RELAY_LOW);
+  toggleHeat(false);
 
 }
 
@@ -408,8 +411,8 @@ void offState() {
   // exit condition: machine is turned on
   if (singleButtonPressed || doubleButtonPressed || machineIsOn) {
     machineIsOn = true;
+    autofillLoopCount = (int) AUTOFILL_LOOPS * 0.9; // want to seed the autofill loop so it triggers shortly after on, but not immediately.
     nextState = 6;
-    shouldAutofill = true;
   }
 }
 
