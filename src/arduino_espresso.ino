@@ -9,8 +9,8 @@ const int BOILER_MAX_THRESH = 400;
 const int BOILER_MIN_THRESH = 400;
 const int DEBOUNCE_DELAY = 10;
 const int SIGNAL_DEBOUNCE_COUNT = 40; // Debounce count for hardware ADC signals with thresholds
-const int FLOWMETER_DEBOUNCE_COUNT = 10;
-const int AVERAGE_LOOP_TIME = 525; // average loop time in microseconds as calculated by doing 1000 loops. NOTE: This should be periodically checked after large changes
+const int FLOWMETER_DEBOUNCE_COUNT = 5;
+const int AVERAGE_LOOP_TIME = 525; // average loop time in microseconds as calculated by doing 1000 loops. NOTE: This should be periodically checked after large changes. It would be super cool if this was dynamic maybe?
 const unsigned long AUTOFILL_LOOPS = 1725000l; // given average loop time, this is about a 15 minute timeout
 const unsigned long MAX_SHOT_PULL_LOOPS = 115000l; //max shot pull time is set at 1 minute
 const int BLINK_LED_LOOPS = 1917; // 1 second led visual cue loop time
@@ -141,14 +141,9 @@ void setup()
   singleShotFlowmeterCount = readIntFromEEPROM(SINGLE_SHOT_FLOW_ADDR);
   doubleShotFlowmeterCount = readIntFromEEPROM(DOUBLE_SHOT_FLOW_ADDR);
   
-  singleShotFlowmeterCount = min(max(singleShotFlowmeterCount, SHOT_FLOW_MIN), SHOT_FLOW_MAX);
-  doubleShotFlowmeterCount = min(max(doubleShotFlowmeterCount, SHOT_FLOW_MIN), SHOT_FLOW_MAX);
-
-  Serial.println("EEPROM:");
-  Serial.print("single val ");
-  Serial.println(singleShotFlowmeterCount);
-  Serial.print("double val ");
-  Serial.println(doubleShotFlowmeterCount);
+  /* EEPROM is all 0xf from the factory. Since we're using a signed int, the default flowmeter count is -1. This bounds it to the max if not set */
+  singleShotFlowmeterCount = singleShotFlowmeterCount < SHOT_FLOW_MIN ? SHOT_FLOW_MAX : singleShotFlowmeterCount;
+  doubleShotFlowmeterCount = doubleShotFlowmeterCount < SHOT_FLOW_MIN ? SHOT_FLOW_MAX : doubleShotFlowmeterCount;
 
 }
 
@@ -194,6 +189,9 @@ void loop() {
     case 5:
       programState();
       break;
+    case 6: 
+      resetVariablesState();
+      break; 
     default:
       baseState();
       break;
@@ -269,7 +267,7 @@ void checkShotTimerCounter() {
   }
 
   if (shotTimerLoopCount >= MAX_SHOT_PULL_LOOPS) {
-    singleButtonPressed = false;
+    stopButtonPressed = true;
     shotTimerLoopCount = 0;
   }
 
@@ -306,6 +304,8 @@ void baseState() {
 
 // state 1
 void pullAShotState() {
+
+  bool inProgramMode = (shouldSaveDoubleFlowmeterValue || shouldSaveSingleFlowmeterValue);
   
   setLEDs(singleButtonPressed ? LOW : HIGH, doubleButtonPressed ? LOW : HIGH, HIGH);
 
@@ -337,8 +337,13 @@ void pullAShotState() {
     handlePersistFlowmeterValue(flowmeterCount);
   }
 
-  // Automatic or manual finish
-  if (stopButtonPressed || flowmeterCount >= flowmeterMaxValue) {
+  // Manual stop due to button
+  if (stopButtonPressed) {
+    nextState = 6;
+  }
+
+  // automatic stop in regular mode
+  if (!inProgramMode && (flowmeterCount >= flowmeterMaxValue)) {
     nextState = 6;
   }
 
@@ -444,7 +449,6 @@ void resetVariablesState() {
   singleBrewButtonLongPressFlag = false;
   doubleBrewButtonLongPressFlag = false;
   stopButtonLongPressFlag = false;
-  
   nextState = 0;
 }
 
@@ -528,9 +532,7 @@ void handleSingleBrewButton() {
   }
 
   if ((millis() - lastSingleBrewButtonDebounceTime) > DEBOUNCE_DELAY) {
-    if (reading != singleBrewButtonState) {
-      singleBrewButtonState = reading;
-    }
+     singleBrewButtonState = reading;
   }
   
   if (lastState == HIGH && singleBrewButtonState == LOW) {
@@ -685,6 +687,10 @@ void printStateInfo() {
   Serial.println(heatIsOn ? "true" : "false");
   Serial.print("machine is on: ");
   Serial.println(machineIsOn ? "true" : "false");
+  Serial.print("flowmeter single count: ");
+  Serial.println(singleShotFlowmeterCount);
+  Serial.print("flowmeter double count: ");
+  Serial.println(doubleShotFlowmeterCount);
   Serial.println("*************************");
 }
 
